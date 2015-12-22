@@ -1,0 +1,125 @@
+#!/bin/sh
+
+# cd work directory
+workdir=$(dirname $0)
+if [ "x$workdir" = "x." ]; then
+    workdir=$(pwd)
+fi
+
+die() {
+    echo $1 > /dev/stderr
+    exit 1
+}
+
+while [ -n "$1" ]; do
+  opt=${1}
+  case "${opt}" in
+    -b|--base-cd-dir) base_cd_dir=$2
+      shift ;;
+    -c|--clean) clean=1;;
+    --auto-clean) autoclean=1;;
+    -n|--name) name=$2
+      shift ;;
+    -p|--package) package=$2
+      shift ;;
+    -m|--mirror) mirror=$2
+      shift ;;
+    -o|--outiso) outiso=$2
+      shift ;;
+    --arch) arch=$2
+      shift ;;
+    --codename) codename=$2
+      shift ;;
+    --custom-build) custom_build=$2
+      shift ;;
+    *) die "ERROR: unknown commandline option: $1"
+      ;;
+  esac
+  shift || die "no argument supplied for ${opt} option"
+done
+
+test -z $name && name=debian-cd
+test -z $arch && arch=$(dpkg --print-architecture)
+test -z $codename && codename=$(lsb_release --short --codename)
+test -z $base_cd_dir && base_cd_dir=/media/cdrom0
+test -z $package && package=linux-image-$arch,grub-pc,busybox,openssh-server
+test -z $clean && clean=0
+test -z $autoclean && autoclean=0
+test -z $outiso && outiso=$workdir/$name-$(date +%Y%m%d.%H%M%S).iso
+test -z $mirror && mirror=file://$base_cd_dir
+
+target=./target-root
+strapdir=./debootstrap-dir
+strapdep=./debootstrap-debs
+archivedir=$strapdir/var/cache/apt/archives
+
+clean() {
+    test -d $target && chmod -R +w $target
+    rm -vrf $target
+    rm -vrf $strapdir
+    rm -vrf $strapdep
+    rm -vrf ${strapdep}.old
+    rm -vrf db
+    rm -vrf conf
+}
+
+if test $clean -eq 1; then
+    clean
+    exit 0
+fi
+
+echo "Sync base cd ..." > /dev/stdout
+base_sync_dir=$base_cd_dir
+test ${base_cd_dir:-1:1} = "/" || base_sync_dir="$base_cd_dir/"
+rsync -a --delete --delete-excluded --exclude doc --exclude /pool --exclude /dists $base_sync_dir  $target
+
+echo "Get package dependencies ..." > /dev/stdout
+depends="$(/usr/sbin/debootstrap --no-check-gpg --print-debs --arch $arch --include $package $codename /tmp/debootstrap $mirror)"
+test $? -eq 0 || die "get package: $package dependencies error"
+
+test -e $strapdep.old && unlink $strapdep.old
+test -e $strapdep && mv $strapdep $strapdep.old
+cat <<EOF >$strapdep
+    $depends
+EOF
+
+deb_update=1
+if test -r ${strapdep}.old; then
+    diff $strapdep ${strapdep}.old
+    test $? -eq 0 && deb_update=0
+fi
+
+if test $deb_update -eq 1; then
+    rm -rf $strapdir
+    /usr/sbin/debootstrap --no-check-gpg --keep-debootstrap-dir --download-only --arch $arch --include $package $codename $strapdir $mirror
+fi
+
+mkdir -p conf
+cat <<EOF > conf/distributions
+Codename: $codename
+Architectures: $arch
+Components: main
+UDebComponents: main
+Description: description
+Update:
+Suite: stable
+EOF
+
+rm -rf db
+chmod +w $target
+reprepro --outdir $target includedeb $codename $strapdir/var/cache/apt/archives/*.deb
+find $base_cd_dir/pool -name *.udeb -print0 | xargs -0 reprepro --outdir $target includeudeb $codename
+dose-debcheck -f -e --progress $target/dists/$codename/main/binary-amd64/Packages.gz
+chmod -w $target
+
+test -z $custom_build || $custom_build $target
+
+chmod +w $target/isolinux/isolinux.bin
+genisoimage -o $outiso -r \
+    -input-charset utf8 \
+    -b isolinux/isolinux.bin -c isolinux/boot.cat \
+    -no-emul-boot -boot-load-size 4 \
+    -boot-info-table $target
+if test $? -eq 0; then echo "Generate $outiso [OK]"; fi
+
+test $autoclean -eq 1 && clean
