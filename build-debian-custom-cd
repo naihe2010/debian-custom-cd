@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# exit at error.
+set -e
+
 # cd work directory
 workdir=$(dirname $0)
 if [ "x$workdir" = "x." ]; then
@@ -123,3 +126,5 @@ genisoimage -o $outiso -r \
 if test $? -eq 0; then echo "Generate $outiso [OK]"; fi
 
 test $autoclean -eq 1 && clean
+
+exit 0
