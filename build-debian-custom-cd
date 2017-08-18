@@ -88,8 +88,10 @@ EOF
 
 deb_update=1
 if test -r ${strapdep}.old; then
-    diff $strapdep ${strapdep}.old
-    test $? -eq 0 && deb_update=0
+    if diff $strapdep ${strapdep}.old
+    then
+       deb_update=0
+    fi
 fi
 
 if test $deb_update -eq 1; then
